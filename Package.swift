@@ -3,7 +3,7 @@
 import PackageDescription
 
 let packageVersion = "0.1.3"
-let cArchiveChecksum = "0000000000000000000000000000000000000000000000000000000000000000"
+let cArchiveChecksum = "8975d6c92192ee5b1bf1ae2448e88939dfad4bda701539e9b5fc8a9e9f8fdfc9"
 
 let package = Package(
     name: "LibArchiveSwift",
