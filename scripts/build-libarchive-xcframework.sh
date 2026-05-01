@@ -3,10 +3,13 @@
 set -euo pipefail
 
 LIBARCHIVE_VERSION="${LIBARCHIVE_VERSION:-v3.8.7}"
-REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/libarchive/libarchive.git}"
+LIBARCHIVE_RELEASE_VERSION="${LIBARCHIVE_VERSION#v}"
+LIBARCHIVE_SHA256="${LIBARCHIVE_SHA256:-d3a8ba457ae25c27c84fd2830a2efdcc5b1d40bf585d4eb0d35f47e99e5d4774}"
+LIBARCHIVE_ARCHIVE_URL="${LIBARCHIVE_ARCHIVE_URL:-https://github.com/libarchive/libarchive/releases/download/${LIBARCHIVE_VERSION}/libarchive-${LIBARCHIVE_RELEASE_VERSION}.tar.xz}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/.build/libarchive"
 SOURCE_DIR="${BUILD_DIR}/source"
+SOURCE_ARCHIVE="${BUILD_DIR}/libarchive-${LIBARCHIVE_RELEASE_VERSION}.tar.xz"
 ARTIFACT_DIR="${ROOT_DIR}/Artifacts"
 XCFRAMEWORK_PATH="${ARTIFACT_DIR}/CArchive.xcframework"
 
@@ -50,14 +53,35 @@ COMMON_CMAKE_OPTIONS=(
 prepare_source() {
   mkdir -p "${BUILD_DIR}" "${ARTIFACT_DIR}"
 
-  if [[ ! -d "${SOURCE_DIR}/.git" ]]; then
-    rm -rf "${SOURCE_DIR}"
-    git init -q "${SOURCE_DIR}"
-    git -C "${SOURCE_DIR}" remote add origin "${REPOSITORY_URL}"
+  if [[ ! -f "${SOURCE_ARCHIVE}" ]]; then
+    curl -fsSL -o "${SOURCE_ARCHIVE}" "${LIBARCHIVE_ARCHIVE_URL}"
   fi
 
-  git -C "${SOURCE_DIR}" fetch --depth 1 origin "refs/tags/${LIBARCHIVE_VERSION}:refs/tags/${LIBARCHIVE_VERSION}"
-  git -C "${SOURCE_DIR}" -c advice.detachedHead=false checkout --detach "${LIBARCHIVE_VERSION}^{commit}"
+  local actual_sha256
+  actual_sha256="$(shasum -a 256 "${SOURCE_ARCHIVE}" | awk '{print $1}')"
+
+  if [[ "${actual_sha256}" != "${LIBARCHIVE_SHA256}" ]]; then
+    echo "SHA256 mismatch for ${SOURCE_ARCHIVE}" >&2
+    echo "expected: ${LIBARCHIVE_SHA256}" >&2
+    echo "actual:   ${actual_sha256}" >&2
+    exit 1
+  fi
+
+  rm -rf "${SOURCE_DIR}"
+  mkdir -p "${SOURCE_DIR}"
+  tar -xJf "${SOURCE_ARCHIVE}" --strip-components 1 -C "${SOURCE_DIR}"
+}
+
+write_module_map() {
+  local headers_path="$1"
+
+  cat >"${headers_path}/module.modulemap" <<'EOF'
+module CArchive {
+  header "archive.h"
+  header "archive_entry.h"
+  export *
+}
+EOF
 }
 
 configure_and_build() {
@@ -91,7 +115,7 @@ configure_and_build() {
   mkdir -p "${headers_path}"
   cp "${SOURCE_DIR}/libarchive/archive.h" "${headers_path}/archive.h"
   cp "${SOURCE_DIR}/libarchive/archive_entry.h" "${headers_path}/archive_entry.h"
-  cp "${SOURCE_DIR}/libarchive/module.modulemap" "${headers_path}/module.modulemap"
+  write_module_map "${headers_path}"
 
   echo "${build_path}/libarchive/libarchive.a|${headers_path}"
 }
@@ -102,19 +126,22 @@ main() {
   rm -rf "${XCFRAMEWORK_PATH}"
 
   local -a framework_args=()
-  local build_result library_path headers_path
+  local build_result
 
-  while IFS= read -r build_result; do
-    library_path="${build_result%%|*}"
-    headers_path="${build_result##*|}"
-    framework_args+=(-library "${library_path}" -headers "${headers_path}")
-  done < <(
-    configure_and_build macosx macosx "arm64;x86_64" "${MACOSX_DEPLOYMENT_TARGET}" Darwin
-    configure_and_build iphoneos iphoneos "arm64" "${IPHONEOS_DEPLOYMENT_TARGET}" iOS
-    configure_and_build iphonesimulator iphonesimulator "arm64;x86_64" "${IPHONEOS_DEPLOYMENT_TARGET}" iOS
-    configure_and_build appletvos appletvos "arm64" "${TVOS_DEPLOYMENT_TARGET}" tvOS
-    configure_and_build appletvsimulator appletvsimulator "arm64;x86_64" "${TVOS_DEPLOYMENT_TARGET}" tvOS
-  )
+  build_result="$(configure_and_build macosx macosx "arm64;x86_64" "${MACOSX_DEPLOYMENT_TARGET}" Darwin)"
+  framework_args+=(-library "${build_result%%|*}" -headers "${build_result##*|}")
+
+  build_result="$(configure_and_build iphoneos iphoneos "arm64" "${IPHONEOS_DEPLOYMENT_TARGET}" iOS)"
+  framework_args+=(-library "${build_result%%|*}" -headers "${build_result##*|}")
+
+  build_result="$(configure_and_build iphonesimulator iphonesimulator "arm64;x86_64" "${IPHONEOS_DEPLOYMENT_TARGET}" iOS)"
+  framework_args+=(-library "${build_result%%|*}" -headers "${build_result##*|}")
+
+  build_result="$(configure_and_build appletvos appletvos "arm64" "${TVOS_DEPLOYMENT_TARGET}" tvOS)"
+  framework_args+=(-library "${build_result%%|*}" -headers "${build_result##*|}")
+
+  build_result="$(configure_and_build appletvsimulator appletvsimulator "arm64;x86_64" "${TVOS_DEPLOYMENT_TARGET}" tvOS)"
+  framework_args+=(-library "${build_result%%|*}" -headers "${build_result##*|}")
 
   if xcrun --sdk xros --show-sdk-path >/dev/null 2>&1; then
     build_result="$(configure_and_build xros xros "arm64" "${XROS_DEPLOYMENT_TARGET}" visionOS)"

@@ -207,8 +207,12 @@ Artifacts/CArchive.xcframework
 You can override the upstream version:
 
 ```sh
-LIBARCHIVE_VERSION=v3.8.7 scripts/build-libarchive-xcframework.sh
+LIBARCHIVE_VERSION=v3.8.7 \
+LIBARCHIVE_SHA256=d3a8ba457ae25c27c84fd2830a2efdcc5b1d40bf585d4eb0d35f47e99e5d4774 \
+scripts/build-libarchive-xcframework.sh
 ```
+
+The script downloads the official upstream release tarball and verifies SHA256 before building. It does not use a git checkout.
 
 ## Use from Swift
 
