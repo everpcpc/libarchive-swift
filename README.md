@@ -14,7 +14,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/everpcpc/libarchive-swift", from: "0.1.2"),
+    .package(url: "https://github.com/everpcpc/libarchive-swift", from: "0.1.4"),
 ]
 ```
 
@@ -77,16 +77,46 @@ do {
 }
 ```
 
+Extract an archive:
+
+```swift
+import Foundation
+import LibArchive
+
+let archiveURL = URL(fileURLWithPath: "/path/to/archive.zip")
+let destinationURL = URL(fileURLWithPath: "/path/to/output", isDirectory: true)
+
+try ArchiveReader().extract(archiveURL, to: destinationURL)
+```
+
+Customize extraction behavior:
+
+```swift
+try ArchiveReader().extract(
+    archiveURL,
+    to: destinationURL,
+    options: [
+        .preserveModificationTime,
+        .preservePermissions,
+        .safeWrites,
+    ]
+)
+```
+
 Current Swift API surface:
 
 - `ArchiveReader.entries(at:)`
+- `ArchiveReader.extract(_:to:options:)`
 - `ArchiveEntry.path`
 - `ArchiveEntry.size`
 - `ArchiveEntry.fileType`
 - `ArchiveEntry.permissions`
 - `ArchiveEntry.modificationDate`
+- `ArchiveExtractionOptions`
 - `LibArchive.versionString`
 - `LibArchive.versionNumber`
+
+Extraction rejects unsafe entry paths by default, including absolute paths and parent-directory traversal. Symlink and hardlink targets are also checked before writing.
 
 ## Supported formats
 
