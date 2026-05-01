@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  detect-version:
+    name: Detect version change
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      - name: Compare VERSION
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < VERSION)"
+          previous_version="$(git show HEAD^:VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+
+          if [[ -z "${version}" ]]; then
+            echo "VERSION is empty" >&2
+            exit 1
+          fi
+
+          if [[ "${version}" == "${previous_version}" ]]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "version=${version}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if gh release view "${version}" >/dev/null 2>&1; then
+            echo "Release ${version} already exists" >&2
+            exit 1
+          fi
+
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+  build-binary:
+    name: Build binary artifact
+    runs-on: macos-26
+    needs: detect-version
+    if: needs.detect-version.outputs.changed == 'true'
+    outputs:
+      checksum: ${{ steps.package.outputs.checksum }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build XCFramework
+        run: scripts/build-libarchive-xcframework.sh
+
+      - name: Zip XCFramework
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ditto -c -k --keepParent Artifacts/CArchive.xcframework CArchive.xcframework.zip
+          checksum="$(swift package compute-checksum CArchive.xcframework.zip)"
+
+          echo "checksum=${checksum}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: CArchive.xcframework.zip
+          path: CArchive.xcframework.zip
+          if-no-files-found: error
+
+  update-manifest:
+    name: Update package manifest
+    runs-on: macos-26
+    needs:
+      - detect-version
+      - build-binary
+    if: needs.detect-version.outputs.changed == 'true'
+    outputs:
+      release-sha: ${{ steps.commit.outputs.release-sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Write binary target metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.detect-version.outputs.version }}"
+          checksum="${{ needs.build-binary.outputs.checksum }}"
+
+          perl -0pi -e 's/let packageVersion = ".*?"/let packageVersion = "'"${version}"'"/' Package.swift
+          perl -0pi -e 's/let cArchiveChecksum = "[0-9a-f]{64}"/let cArchiveChecksum = "'"${checksum}"'"/' Package.swift
+
+      - name: Validate manifest
+        run: swift package describe
+
+      - name: Commit and tag release
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.detect-version.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Package.swift
+          git commit -m "chore(release): prepare ${version}"
+          git tag "${version}"
+          git push origin HEAD:main
+          git push origin "${version}"
+
+          echo "release-sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+  publish-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - detect-version
+      - build-binary
+      - update-manifest
+    if: needs.detect-version.outputs.changed == 'true'
+    steps:
+      - name: Download release asset
+        uses: actions/download-artifact@v4
+        with:
+          name: CArchive.xcframework.zip
+
+      - name: Create release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.detect-version.outputs.version }}"
+          gh release create "${version}" CArchive.xcframework.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${{ needs.update-manifest.outputs.release-sha }}" \
+            --title "${version}" \
+            --notes "Automated binary release for ${version}."
