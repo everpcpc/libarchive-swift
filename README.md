@@ -1,4 +1,4 @@
-# LibArchiveSwift
+# LibArchive
 
 Swift Package wrapper for [libarchive](https://github.com/libarchive/libarchive).
 
@@ -14,7 +14,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/everpcpc/libarchive-swift", from: "0.1.4"),
+    .package(url: "https://github.com/everpcpc/libarchive-swift", from: "0.1.5"),
 ]
 ```
 

@@ -6,7 +6,7 @@ let packageVersion = "0.1.4"
 let cArchiveChecksum = "8c5d27c8be4c8a8423a6d13e805cc86b7f80e9f09410d3bfa070313813dae41d"
 
 let package = Package(
-    name: "LibArchiveSwift",
+    name: "LibArchive",
     platforms: [
         .iOS(.v13),
         .macOS(.v11),
