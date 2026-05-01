@@ -2,8 +2,8 @@
 
 import PackageDescription
 
-let packageVersion = "0.1.3"
-let cArchiveChecksum = "8975d6c92192ee5b1bf1ae2448e88939dfad4bda701539e9b5fc8a9e9f8fdfc9"
+let packageVersion = "0.1.4"
+let cArchiveChecksum = "8c5d27c8be4c8a8423a6d13e805cc86b7f80e9f09410d3bfa070313813dae41d"
 
 let package = Package(
     name: "LibArchiveSwift",
