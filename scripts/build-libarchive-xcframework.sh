@@ -52,11 +52,12 @@ prepare_source() {
 
   if [[ ! -d "${SOURCE_DIR}/.git" ]]; then
     rm -rf "${SOURCE_DIR}"
-    git clone --depth 1 --branch "${LIBARCHIVE_VERSION}" "${REPOSITORY_URL}" "${SOURCE_DIR}"
-  else
-    git -C "${SOURCE_DIR}" fetch --depth 1 origin "refs/tags/${LIBARCHIVE_VERSION}:refs/tags/${LIBARCHIVE_VERSION}"
-    git -C "${SOURCE_DIR}" checkout --detach "${LIBARCHIVE_VERSION}"
+    git init -q "${SOURCE_DIR}"
+    git -C "${SOURCE_DIR}" remote add origin "${REPOSITORY_URL}"
   fi
+
+  git -C "${SOURCE_DIR}" fetch --depth 1 origin "refs/tags/${LIBARCHIVE_VERSION}:refs/tags/${LIBARCHIVE_VERSION}"
+  git -C "${SOURCE_DIR}" -c advice.detachedHead=false checkout --detach "${LIBARCHIVE_VERSION}^{commit}"
 }
 
 configure_and_build() {

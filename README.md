@@ -103,20 +103,58 @@ try ArchiveReader().extract(
 )
 ```
 
-Current Swift API surface:
+## Swift API coverage
+
+This package deliberately exposes a small Swift-friendly API on top of libarchive. It does not try to mirror every C function one by one.
+
+Supported Swift APIs:
 
 - `ArchiveReader.entries(at:)`
+  - Opens an archive from a file URL.
+  - Returns metadata for each entry.
+  - Skips entry payloads.
 - `ArchiveReader.extract(_:to:options:)`
+  - Extracts an archive to a destination directory.
+  - Uses libarchive's disk writer.
+  - Rejects absolute paths and parent-directory traversal before writing.
+  - Checks symlink and hardlink targets before writing.
 - `ArchiveEntry.path`
 - `ArchiveEntry.size`
 - `ArchiveEntry.fileType`
 - `ArchiveEntry.permissions`
 - `ArchiveEntry.modificationDate`
 - `ArchiveExtractionOptions`
+  - `preserveOwner`
+  - `preservePermissions`
+  - `preserveModificationTime`
+  - `noOverwrite`
+  - `noOverwriteNewer`
+  - `unlinkExisting`
+  - `preserveACL`
+  - `preserveFileFlags`
+  - `preserveExtendedAttributes`
+  - `sparse`
+  - `safeWrites`
 - `LibArchive.versionString`
 - `LibArchive.versionNumber`
 
 Extraction rejects unsafe entry paths by default, including absolute paths and parent-directory traversal. Symlink and hardlink targets are also checked before writing.
+
+Not yet wrapped as Swift APIs:
+
+- Streaming entry data to memory or a caller-provided sink.
+- Creating archives.
+- Appending files to archives.
+- Writing archive entries.
+- Selecting a specific read format or filter per operation.
+- Password/passphrase APIs for encrypted archives.
+- Progress callbacks and cancellation.
+- Custom libarchive callbacks for open/read/seek/close.
+- In-memory archive input.
+- Extended metadata wrappers for ACLs, xattrs, file flags, sparse maps, digests, uid/gid/uname/gname, hardlinks, symlink metadata, birth/ctime/atime, and macOS metadata.
+- Low-level access to `struct archive` or `struct archive_entry` handles.
+
+The underlying `CArchive` target contains the upstream C headers, but it is an implementation dependency of the Swift wrapper target. Public package consumers should treat `LibArchive` as the supported API surface.
 
 ## Supported formats
 
@@ -201,7 +239,7 @@ MACOSX_DEPLOYMENT_TARGET=10.15 \
 scripts/build-libarchive-xcframework.sh
 ```
 
-The checked-in `Artifacts/CArchive.xcframework` currently contains slices for:
+The release asset `CArchive.xcframework.zip` currently contains slices for:
 
 - iOS device and simulator
 - macOS universal
@@ -223,7 +261,7 @@ Enable more filters only when there is a concrete product requirement and matchi
 
 This wrapper package is distributed under the BSD 2-Clause License. See `LICENSE`.
 
-The checked-in `CArchive.xcframework` is built from upstream libarchive. libarchive is BSD-style licensed, with per-file notices and exceptions in the upstream source tree. This repository includes the upstream notice in `COPYING.libarchive`; keep it with any binary distribution.
+The release asset `CArchive.xcframework.zip` is built from upstream libarchive. libarchive is BSD-style licensed, with per-file notices and exceptions in the upstream source tree. This repository includes the upstream notice in `COPYING.libarchive`; keep it with any binary distribution.
 
 The default artifact includes upstream libarchive object code, so downstream redistributors should preserve both files:
 
