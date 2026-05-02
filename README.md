@@ -14,7 +14,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/everpcpc/libarchive-swift", from: "0.1.5"),
+    .package(url: "https://github.com/everpcpc/libarchive-swift", from: "0.1.6"),
 ]
 ```
 
@@ -52,6 +52,23 @@ let entries = try ArchiveReader().entries(at: archiveURL)
 
 for entry in entries {
     print("\(entry.path) \(entry.size) \(entry.fileType)")
+}
+```
+
+Read an entry payload:
+
+```swift
+import Foundation
+import LibArchive
+
+let data = try ArchiveReader().data(forEntryPath: "folder/file.txt", in: archiveURL)
+```
+
+Stream entry payload blocks:
+
+```swift
+try ArchiveReader().readDataBlocks(forEntryPath: "folder/file.txt", in: archiveURL) { block in
+    print(block.offset, block.data.count)
 }
 ```
 
@@ -113,6 +130,12 @@ Supported Swift APIs:
   - Opens an archive from a file URL.
   - Returns metadata for each entry.
   - Skips entry payloads.
+- `ArchiveReader.data(forEntryPath:in:)`
+  - Reads a single entry payload into memory.
+  - Preserves sparse holes as zero-filled ranges when block offsets contain gaps.
+- `ArchiveReader.readDataBlocks(forEntryPath:in:_:)`
+  - Streams a single entry payload to a caller-provided block receiver.
+  - Exposes each libarchive data block with its offset.
 - `ArchiveReader.extract(_:to:options:)`
   - Extracts an archive to a destination directory.
   - Uses libarchive's disk writer.
@@ -123,6 +146,19 @@ Supported Swift APIs:
 - `ArchiveEntry.fileType`
 - `ArchiveEntry.permissions`
 - `ArchiveEntry.modificationDate`
+- `ArchiveEntry.accessDate`
+- `ArchiveEntry.changeDate`
+- `ArchiveEntry.birthDate`
+- `ArchiveEntry.symlinkTarget`
+- `ArchiveEntry.hardlinkTarget`
+- `ArchiveEntry.uid`
+- `ArchiveEntry.gid`
+- `ArchiveEntry.userName`
+- `ArchiveEntry.groupName`
+- `ArchiveEntry.isDataEncrypted`
+- `ArchiveEntry.isMetadataEncrypted`
+- `ArchiveDataBlock.offset`
+- `ArchiveDataBlock.data`
 - `ArchiveExtractionOptions`
   - `preserveOwner`
   - `preservePermissions`
@@ -142,7 +178,6 @@ Extraction rejects unsafe entry paths by default, including absolute paths and p
 
 Not yet wrapped as Swift APIs:
 
-- Streaming entry data to memory or a caller-provided sink.
 - Creating archives.
 - Appending files to archives.
 - Writing archive entries.
@@ -151,7 +186,7 @@ Not yet wrapped as Swift APIs:
 - Progress callbacks and cancellation.
 - Custom libarchive callbacks for open/read/seek/close.
 - In-memory archive input.
-- Extended metadata wrappers for ACLs, xattrs, file flags, sparse maps, digests, uid/gid/uname/gname, hardlinks, symlink metadata, birth/ctime/atime, and macOS metadata.
+- Extended metadata wrappers for ACLs, xattrs, file flags, sparse maps, digests, macOS metadata, device numbers, inode numbers, and nanosecond time components.
 - Low-level access to `struct archive` or `struct archive_entry` handles.
 
 The underlying `CArchive` target contains the upstream C headers, but it is an implementation dependency of the Swift wrapper target. Public package consumers should treat `LibArchive` as the supported API surface.

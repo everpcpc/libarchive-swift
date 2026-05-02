@@ -44,15 +44,7 @@ public final class ArchiveReader {
                     throw ArchiveError.invalidEntryPath
                 }
 
-                result.append(
-                    ArchiveEntry(
-                        path: String(cString: path),
-                        size: archive_entry_size(entryPointer),
-                        fileType: Self.fileType(from: archive_entry_filetype(entryPointer)),
-                        permissions: UInt16(archive_entry_perm(entryPointer)),
-                        modificationDate: Self.modificationDate(from: entryPointer)
-                    )
-                )
+                result.append(Self.entry(from: entryPointer, path: String(cString: path)))
 
                 let skipStatus = archive_read_data_skip(archive)
                 guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
@@ -61,6 +53,81 @@ public final class ArchiveReader {
             }
 
             return result
+        }
+    }
+
+    public func data(forEntryPath entryPath: String, in fileURL: URL) throws -> Data {
+        var data = Data()
+
+        try readDataBlocks(forEntryPath: entryPath, in: fileURL) { block in
+            guard block.offset >= 0 else {
+                throw ArchiveError.invalidEntryDataOffset(path: entryPath, offset: block.offset)
+            }
+
+            guard block.offset <= Int64(Int.max) else {
+                throw ArchiveError.entryDataTooLarge(path: entryPath)
+            }
+
+            let offset = Int(block.offset)
+            if data.count < offset {
+                data.append(Data(repeating: 0, count: offset - data.count))
+            }
+
+            let endOffset = offset + block.data.count
+            guard endOffset >= offset else {
+                throw ArchiveError.entryDataTooLarge(path: entryPath)
+            }
+
+            if data.count < endOffset {
+                data.append(Data(repeating: 0, count: endOffset - data.count))
+            }
+
+            data.replaceSubrange(offset..<endOffset, with: block.data)
+        }
+
+        return data
+    }
+
+    public func readDataBlocks(
+        forEntryPath entryPath: String,
+        in fileURL: URL,
+        _ receive: (ArchiveDataBlock) throws -> Void
+    ) throws {
+        var foundEntry = false
+
+        try withOpenArchive(at: fileURL) { archive in
+            var entryPointer: OpaquePointer?
+
+            while true {
+                let status = archive_read_next_header(archive, &entryPointer)
+
+                if status == ARCHIVE_EOF {
+                    break
+                }
+
+                guard status == ARCHIVE_OK else {
+                    throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
+                }
+
+                guard let entryPointer, let path = archive_entry_pathname(entryPointer) else {
+                    throw ArchiveError.invalidEntryPath
+                }
+
+                if String(cString: path) == entryPath {
+                    foundEntry = true
+                    try Self.readDataBlocks(from: archive, receive)
+                    break
+                }
+
+                let skipStatus = archive_read_data_skip(archive)
+                guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
+                    throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
+                }
+            }
+        }
+
+        if !foundEntry {
+            throw ArchiveError.entryNotFound(path: entryPath)
         }
     }
 
@@ -149,15 +216,42 @@ public final class ArchiveReader {
         }
     }
 
-    private static func modificationDate(from entry: OpaquePointer) -> Date? {
-        guard archive_entry_mtime_is_set(entry) != 0 else {
+    private static func entry(from entry: OpaquePointer, path: String) -> ArchiveEntry {
+        ArchiveEntry(
+            path: path,
+            size: archive_entry_size(entry),
+            fileType: fileType(from: entry),
+            permissions: UInt16(archive_entry_perm(entry)),
+            modificationDate: date(isSet: archive_entry_mtime_is_set(entry), seconds: archive_entry_mtime(entry)),
+            accessDate: date(isSet: archive_entry_atime_is_set(entry), seconds: archive_entry_atime(entry)),
+            changeDate: date(isSet: archive_entry_ctime_is_set(entry), seconds: archive_entry_ctime(entry)),
+            birthDate: date(isSet: archive_entry_birthtime_is_set(entry), seconds: archive_entry_birthtime(entry)),
+            symlinkTarget: string(from: archive_entry_symlink(entry)),
+            hardlinkTarget: string(from: archive_entry_hardlink(entry)),
+            uid: int64Value(isSet: archive_entry_uid_is_set(entry), value: archive_entry_uid(entry)),
+            gid: int64Value(isSet: archive_entry_gid_is_set(entry), value: archive_entry_gid(entry)),
+            userName: string(from: archive_entry_uname(entry)),
+            groupName: string(from: archive_entry_gname(entry)),
+            isDataEncrypted: archive_entry_is_data_encrypted(entry) != 0,
+            isMetadataEncrypted: archive_entry_is_metadata_encrypted(entry) != 0
+        )
+    }
+
+    private static func date(isSet: Int32, seconds: Int) -> Date? {
+        guard isSet != 0 else {
             return nil
         }
 
-        return Date(timeIntervalSince1970: TimeInterval(archive_entry_mtime(entry)))
+        return Date(timeIntervalSince1970: TimeInterval(seconds))
     }
 
-    private static func fileType(from rawValue: mode_t) -> ArchiveEntry.FileType {
+    private static func fileType(from entry: OpaquePointer) -> ArchiveEntry.FileType {
+        if archive_entry_hardlink_is_set(entry) != 0 {
+            return .hardLink
+        }
+
+        let rawValue = archive_entry_filetype(entry)
+
         switch rawValue & fileTypeMask {
         case regularFile:
             return .regular
@@ -176,6 +270,18 @@ public final class ArchiveReader {
         default:
             return .unknown(Int(rawValue))
         }
+    }
+
+    private static func string(from pointer: UnsafePointer<CChar>?) -> String? {
+        pointer.map { String(cString: $0) }
+    }
+
+    private static func int64Value(isSet: Int32, value: Int64) -> Int64? {
+        guard isSet != 0 else {
+            return nil
+        }
+
+        return value
     }
 
     private static func errorMessage(from archive: OpaquePointer) -> String {
@@ -242,6 +348,20 @@ public final class ArchiveReader {
     }
 
     private static func copyData(from archive: OpaquePointer, to disk: OpaquePointer) throws {
+        try readDataBlocks(from: archive) { block in
+            let writeStatus = block.data.withUnsafeBytes { buffer in
+                archive_write_data_block(disk, buffer.baseAddress, block.data.count, block.offset)
+            }
+            guard writeStatus == ARCHIVE_OK else {
+                throw ArchiveError.writeFailed(message: errorMessage(from: disk))
+            }
+        }
+    }
+
+    private static func readDataBlocks(
+        from archive: OpaquePointer,
+        _ receive: (ArchiveDataBlock) throws -> Void
+    ) throws {
         while true {
             var buffer: UnsafeRawPointer?
             var size = 0
@@ -260,10 +380,7 @@ public final class ArchiveReader {
                 continue
             }
 
-            let writeStatus = archive_write_data_block(disk, buffer, size, offset)
-            guard writeStatus == ARCHIVE_OK else {
-                throw ArchiveError.writeFailed(message: errorMessage(from: disk))
-            }
+            try receive(ArchiveDataBlock(offset: offset, data: Data(bytes: buffer, count: size)))
         }
     }
 

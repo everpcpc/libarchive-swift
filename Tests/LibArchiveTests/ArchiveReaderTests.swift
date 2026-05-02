@@ -62,6 +62,100 @@ func listsEntriesFromRar5Archive() throws {
 }
 
 @Test
+func readsEntryDataFromTarArchive() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+
+    try writeTarArchive(
+        entries: [
+            .regular(path: "folder/hello.txt", contents: Data("hello\n".utf8)),
+        ],
+        to: archiveURL
+    )
+
+    let data = try ArchiveReader().data(forEntryPath: "folder/hello.txt", in: archiveURL)
+    #expect(String(decoding: data, as: UTF8.self) == "hello\n")
+}
+
+@Test
+func streamsEntryDataBlocksFromTarArchive() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+
+    try writeTarArchive(
+        entries: [
+            .regular(path: "hello.txt", contents: Data("hello\n".utf8)),
+        ],
+        to: archiveURL
+    )
+
+    var blocks: [ArchiveDataBlock] = []
+    try ArchiveReader().readDataBlocks(forEntryPath: "hello.txt", in: archiveURL) { block in
+        blocks.append(block)
+    }
+
+    #expect(blocks.map(\.offset) == [0])
+    #expect(String(decoding: blocks.flatMap(\.data), as: UTF8.self) == "hello\n")
+}
+
+@Test
+func throwsWhenReadingMissingEntryData() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+
+    try writeTarArchive(
+        entries: [
+            .regular(path: "hello.txt", contents: Data("hello\n".utf8)),
+        ],
+        to: archiveURL
+    )
+
+    var didThrow = false
+
+    do {
+        _ = try ArchiveReader().data(forEntryPath: "missing.txt", in: archiveURL)
+    } catch ArchiveError.entryNotFound("missing.txt") {
+        didThrow = true
+    }
+
+    #expect(didThrow)
+}
+
+@Test
+func exposesExtendedEntryMetadata() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+
+    try writeTarArchive(
+        entries: [
+            .regular(
+                path: "hello.txt",
+                contents: Data("hello\n".utf8),
+                uid: 501,
+                gid: 20,
+                userName: "ever",
+                groupName: "staff"
+            ),
+            .symlink(path: "hello-link.txt", target: "hello.txt"),
+        ],
+        to: archiveURL
+    )
+
+    let entries = try ArchiveReader().entries(at: archiveURL)
+    let file = try #require(entries.first { $0.path == "hello.txt" })
+    let link = try #require(entries.first { $0.path == "hello-link.txt" })
+
+    #expect(file.uid == 501)
+    #expect(file.gid == 20)
+    #expect(file.userName == "ever")
+    #expect(file.groupName == "staff")
+    #expect(file.isDataEncrypted == false)
+    #expect(file.isMetadataEncrypted == false)
+    #expect(link.fileType == .symbolicLink)
+    #expect(link.symlinkTarget == "hello.txt")
+}
+
+@Test
 func extractsTarArchive() throws {
     let workspace = try makeWorkspace()
     let archiveURL = workspace.appendingPathComponent("sample.tar")
@@ -69,7 +163,7 @@ func extractsTarArchive() throws {
 
     try writeTarArchive(
         entries: [
-            (path: "folder/hello.txt", contents: Data("hello\n".utf8)),
+            .regular(path: "folder/hello.txt", contents: Data("hello\n".utf8)),
         ],
         to: archiveURL
     )
@@ -116,7 +210,7 @@ func rejectsParentDirectoryTraversalDuringExtraction() throws {
 
     try writeTarArchive(
         entries: [
-            (path: "../escape.txt", contents: Data("escape\n".utf8)),
+            .regular(path: "../escape.txt", contents: Data("escape\n".utf8)),
         ],
         to: archiveURL
     )
@@ -160,13 +254,13 @@ private func fixtureURL(named name: String) throws -> URL {
 }
 
 private func writeTarArchive(
-    entries: [(path: String, contents: Data)],
+    entries: [TarEntry],
     to archiveURL: URL
 ) throws {
     var archive = Data()
 
     for entry in entries {
-        archive.append(tarHeader(path: entry.path, size: entry.contents.count))
+        archive.append(tarHeader(for: entry))
         archive.append(entry.contents)
 
         let padding = (512 - (entry.contents.count % 512)) % 512
@@ -177,19 +271,78 @@ private func writeTarArchive(
     try archive.write(to: archiveURL)
 }
 
-private func tarHeader(path: String, size: Int) -> Data {
+private struct TarEntry {
+    let path: String
+    let contents: Data
+    let typeFlag: String
+    let linkName: String
+    let permissions: Int
+    let uid: Int
+    let gid: Int
+    let userName: String
+    let groupName: String
+
+    static func regular(
+        path: String,
+        contents: Data,
+        permissions: Int = 0o644,
+        uid: Int = 0,
+        gid: Int = 0,
+        userName: String = "",
+        groupName: String = ""
+    ) -> Self {
+        Self(
+            path: path,
+            contents: contents,
+            typeFlag: "0",
+            linkName: "",
+            permissions: permissions,
+            uid: uid,
+            gid: gid,
+            userName: userName,
+            groupName: groupName
+        )
+    }
+
+    static func symlink(
+        path: String,
+        target: String,
+        permissions: Int = 0o777,
+        uid: Int = 0,
+        gid: Int = 0,
+        userName: String = "",
+        groupName: String = ""
+    ) -> Self {
+        Self(
+            path: path,
+            contents: Data(),
+            typeFlag: "2",
+            linkName: target,
+            permissions: permissions,
+            uid: uid,
+            gid: gid,
+            userName: userName,
+            groupName: groupName
+        )
+    }
+}
+
+private func tarHeader(for entry: TarEntry) -> Data {
     var header = Data(repeating: 0, count: 512)
 
-    write(path, to: &header, offset: 0, length: 100)
-    writeOctal(0o644, to: &header, offset: 100, length: 8)
-    writeOctal(0, to: &header, offset: 108, length: 8)
-    writeOctal(0, to: &header, offset: 116, length: 8)
-    writeOctal(size, to: &header, offset: 124, length: 12)
+    write(entry.path, to: &header, offset: 0, length: 100)
+    writeOctal(entry.permissions, to: &header, offset: 100, length: 8)
+    writeOctal(entry.uid, to: &header, offset: 108, length: 8)
+    writeOctal(entry.gid, to: &header, offset: 116, length: 8)
+    writeOctal(entry.contents.count, to: &header, offset: 124, length: 12)
     writeOctal(0, to: &header, offset: 136, length: 12)
     header.replaceSubrange(148..<156, with: Data(repeating: 0x20, count: 8))
-    write("0", to: &header, offset: 156, length: 1)
+    write(entry.typeFlag, to: &header, offset: 156, length: 1)
+    write(entry.linkName, to: &header, offset: 157, length: 100)
     write("ustar", to: &header, offset: 257, length: 6)
     write("00", to: &header, offset: 263, length: 2)
+    write(entry.userName, to: &header, offset: 265, length: 32)
+    write(entry.groupName, to: &header, offset: 297, length: 32)
 
     let checksum = header.reduce(0) { $0 + Int($1) }
     writeChecksum(checksum, to: &header)
