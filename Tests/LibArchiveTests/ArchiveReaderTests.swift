@@ -178,6 +178,38 @@ func extractsTarArchive() throws {
 }
 
 @Test
+func extractsArchiveWithNormalizedPermissions() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+    let destinationURL = workspace.appendingPathComponent("output", isDirectory: true)
+
+    try writeTarArchive(
+        entries: [
+            .directory(path: "readonly", permissions: 0o555),
+            .regular(path: "readonly/hello.txt", contents: Data("hello\n".utf8), permissions: 0o444),
+        ],
+        to: archiveURL
+    )
+
+    try ArchiveReader().extract(
+        archiveURL,
+        to: destinationURL,
+        options: [.preservePermissions],
+        permissionMode: .normalized
+    )
+
+    let directoryPermissions = try posixPermissions(
+        at: destinationURL.appendingPathComponent("readonly", isDirectory: true)
+    )
+    let filePermissions = try posixPermissions(
+        at: destinationURL.appendingPathComponent("readonly/hello.txt")
+    )
+
+    #expect(directoryPermissions == 0o755)
+    #expect(filePermissions == 0o644)
+}
+
+@Test
 func extractsZipArchive() throws {
     let workspace = try makeWorkspace()
     let sourceDirectory = workspace.appendingPathComponent("source", isDirectory: true)
@@ -249,6 +281,11 @@ private func run(
     #expect(process.terminationStatus == 0)
 }
 
+private func posixPermissions(at url: URL) throws -> Int {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return try #require(attributes[.posixPermissions] as? Int) & 0o777
+}
+
 private func fixtureURL(named name: String) throws -> URL {
     try #require(Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures"))
 }
@@ -295,6 +332,27 @@ private struct TarEntry {
             path: path,
             contents: contents,
             typeFlag: "0",
+            linkName: "",
+            permissions: permissions,
+            uid: uid,
+            gid: gid,
+            userName: userName,
+            groupName: groupName
+        )
+    }
+
+    static func directory(
+        path: String,
+        permissions: Int = 0o755,
+        uid: Int = 0,
+        gid: Int = 0,
+        userName: String = "",
+        groupName: String = ""
+    ) -> Self {
+        Self(
+            path: path,
+            contents: Data(),
+            typeFlag: "5",
             linkName: "",
             permissions: permissions,
             uid: uid,

@@ -120,6 +120,16 @@ try ArchiveReader().extract(
 )
 ```
 
+Normalize extracted file and directory permissions while keeping the single-pass libarchive disk writer path:
+
+```swift
+try ArchiveReader().extract(
+    archiveURL,
+    to: destinationURL,
+    permissionMode: .normalized
+)
+```
+
 ## Swift API coverage
 
 This package deliberately exposes a small Swift-friendly API on top of libarchive. It does not try to mirror every C function one by one.
@@ -136,9 +146,10 @@ Supported Swift APIs:
 - `ArchiveReader.readDataBlocks(forEntryPath:in:_:)`
   - Streams a single entry payload to a caller-provided block receiver.
   - Exposes each libarchive data block with its offset.
-- `ArchiveReader.extract(_:to:options:)`
+- `ArchiveReader.extract(_:to:options:permissionMode:)`
   - Extracts an archive to a destination directory.
   - Uses libarchive's disk writer.
+  - Can normalize regular file and directory permissions before writing.
   - Rejects absolute paths and parent-directory traversal before writing.
   - Checks symlink and hardlink targets before writing.
 - `ArchiveEntry.path`
@@ -159,6 +170,10 @@ Supported Swift APIs:
 - `ArchiveEntry.isMetadataEncrypted`
 - `ArchiveDataBlock.offset`
 - `ArchiveDataBlock.data`
+- `ArchiveExtractionPermissionMode`
+  - `archive`
+  - `normalized`
+  - `custom(file:directory:)`
 - `ArchiveExtractionOptions`
   - `preserveOwner`
   - `preservePermissions`

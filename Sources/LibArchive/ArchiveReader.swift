@@ -134,7 +134,8 @@ public final class ArchiveReader {
     public func extract(
         _ fileURL: URL,
         to destinationURL: URL,
-        options: ArchiveExtractionOptions = .default
+        options: ArchiveExtractionOptions = .default,
+        permissionMode: ArchiveExtractionPermissionMode = .archive
     ) throws {
         do {
             try FileManager.default.createDirectory(
@@ -194,6 +195,8 @@ public final class ArchiveReader {
                     archive_entry_set_pathname(entryPointer, outputPath)
                 }
 
+                Self.normalizePermissionsIfNeeded(for: entryPointer, permissionMode: permissionMode)
+
                 let writeHeaderStatus = archive_write_header(disk, entryPointer)
                 guard writeHeaderStatus == ARCHIVE_OK || writeHeaderStatus == ARCHIVE_WARN else {
                     throw ArchiveError.writeFailed(message: Self.errorMessage(from: disk))
@@ -213,6 +216,34 @@ public final class ArchiveReader {
             guard closeStatus == ARCHIVE_OK || closeStatus == ARCHIVE_WARN else {
                 throw ArchiveError.writeFailed(message: Self.errorMessage(from: disk))
             }
+        }
+    }
+
+    private static func normalizePermissionsIfNeeded(
+        for entry: OpaquePointer,
+        permissionMode: ArchiveExtractionPermissionMode
+    ) {
+        let filePermission: UInt16
+        let directoryPermission: UInt16
+
+        switch permissionMode {
+        case .archive:
+            return
+        case .normalized:
+            filePermission = 0o644
+            directoryPermission = 0o755
+        case let .custom(file, directory):
+            filePermission = file
+            directoryPermission = directory
+        }
+
+        switch fileType(from: entry) {
+        case .regular:
+            archive_entry_set_perm(entry, mode_t(filePermission))
+        case .directory:
+            archive_entry_set_perm(entry, mode_t(directoryPermission))
+        default:
+            break
         }
     }
 

@@ -30,3 +30,9 @@ public struct ArchiveExtractionOptions: OptionSet, Sendable {
             | Int32(ARCHIVE_EXTRACT_SECURE_NODOTDOT)
     }
 }
+
+public enum ArchiveExtractionPermissionMode: Sendable {
+    case archive
+    case normalized
+    case custom(file: UInt16, directory: UInt16)
+}
