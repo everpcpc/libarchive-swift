@@ -36,15 +36,16 @@ public final class ArchiveReader {
                     break
                 }
 
-                guard status == ARCHIVE_OK else {
+                guard status == ARCHIVE_OK || status == ARCHIVE_WARN else {
                     throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
                 }
 
-                guard let entryPointer, let path = archive_entry_pathname(entryPointer) else {
+                guard let entryPointer else {
                     throw ArchiveError.invalidEntryPath
                 }
+                let path = try Self.path(from: entryPointer)
 
-                result.append(Self.entry(from: entryPointer, path: String(cString: path)))
+                result.append(Self.entry(from: entryPointer, path: path))
 
                 let skipStatus = archive_read_data_skip(archive)
                 guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
@@ -105,15 +106,16 @@ public final class ArchiveReader {
                     break
                 }
 
-                guard status == ARCHIVE_OK else {
+                guard status == ARCHIVE_OK || status == ARCHIVE_WARN else {
                     throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
                 }
 
-                guard let entryPointer, let path = archive_entry_pathname(entryPointer) else {
+                guard let entryPointer else {
                     throw ArchiveError.invalidEntryPath
                 }
+                let path = try Self.path(from: entryPointer)
 
-                if String(cString: path) == entryPath {
+                if path == entryPath {
                     foundEntry = true
                     try Self.readDataBlocks(from: archive, receive)
                     break
@@ -171,15 +173,15 @@ public final class ArchiveReader {
                     break
                 }
 
-                guard readStatus == ARCHIVE_OK else {
+                guard readStatus == ARCHIVE_OK || readStatus == ARCHIVE_WARN else {
                     throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
                 }
 
-                guard let entryPointer, let pathPointer = archive_entry_pathname(entryPointer) else {
+                guard let entryPointer else {
                     throw ArchiveError.invalidEntryPath
                 }
 
-                let entryPath = String(cString: pathPointer)
+                let entryPath = try Self.path(from: entryPointer)
                 let outputURL = try Self.outputURL(
                     forEntryPath: entryPath,
                     relativeTo: extractionRootURL
@@ -257,15 +259,39 @@ public final class ArchiveReader {
             accessDate: date(isSet: archive_entry_atime_is_set(entry), seconds: archive_entry_atime(entry)),
             changeDate: date(isSet: archive_entry_ctime_is_set(entry), seconds: archive_entry_ctime(entry)),
             birthDate: date(isSet: archive_entry_birthtime_is_set(entry), seconds: archive_entry_birthtime(entry)),
-            symlinkTarget: string(from: archive_entry_symlink(entry)),
-            hardlinkTarget: string(from: archive_entry_hardlink(entry)),
+            symlinkTarget: linkTarget(from: entry, utf8: archive_entry_symlink_utf8, fallback: archive_entry_symlink),
+            hardlinkTarget: linkTarget(from: entry, utf8: archive_entry_hardlink_utf8, fallback: archive_entry_hardlink),
             uid: int64Value(isSet: archive_entry_uid_is_set(entry), value: archive_entry_uid(entry)),
             gid: int64Value(isSet: archive_entry_gid_is_set(entry), value: archive_entry_gid(entry)),
-            userName: string(from: archive_entry_uname(entry)),
-            groupName: string(from: archive_entry_gname(entry)),
+            userName: utf8String(from: archive_entry_uname_utf8(entry), fallback: archive_entry_uname(entry)),
+            groupName: utf8String(from: archive_entry_gname_utf8(entry), fallback: archive_entry_gname(entry)),
             isDataEncrypted: archive_entry_is_data_encrypted(entry) != 0,
             isMetadataEncrypted: archive_entry_is_metadata_encrypted(entry) != 0
         )
+    }
+
+    private static func path(from entry: OpaquePointer) throws -> String {
+        if let path = archive_entry_pathname_utf8(entry) {
+            return String(cString: path)
+        }
+
+        if let path = archive_entry_pathname(entry) {
+            return String(cString: path)
+        }
+
+        throw ArchiveError.invalidEntryPath
+    }
+
+    private static func utf8String(from utf8Pointer: UnsafePointer<CChar>?, fallback: UnsafePointer<CChar>?) -> String? {
+        if let utf8Pointer {
+            return String(cString: utf8Pointer)
+        }
+
+        return fallback.map { String(cString: $0) }
+    }
+
+    private static func linkTarget(from entry: OpaquePointer, utf8: (OpaquePointer) -> UnsafePointer<CChar>?, fallback: (OpaquePointer) -> UnsafePointer<CChar>?) -> String? {
+        utf8String(from: utf8(entry), fallback: fallback(entry))
     }
 
     private static func date(isSet: Int32, seconds: Int) -> Date? {
@@ -323,6 +349,24 @@ public final class ArchiveReader {
         return String(cString: message)
     }
 
+    private static func withUTF8Locale<T>(_ body: () throws -> T) throws -> T {
+        guard let locale = newlocale(LC_CTYPE_MASK, "C.UTF-8", nil)
+            ?? newlocale(LC_CTYPE_MASK, "en_US.UTF-8", nil)
+        else {
+            return try body()
+        }
+        defer {
+            freelocale(locale)
+        }
+
+        let previousLocale = uselocale(locale)
+        defer {
+            uselocale(previousLocale)
+        }
+
+        return try body()
+    }
+
     private func withOpenArchive<T>(
         at fileURL: URL,
         _ body: (OpaquePointer) throws -> T
@@ -353,7 +397,9 @@ public final class ArchiveReader {
                 archive_read_close(archive)
             }
 
-            return try body(archive)
+            return try Self.withUTF8Locale {
+                try body(archive)
+            }
         }
     }
 
@@ -443,14 +489,12 @@ public final class ArchiveReader {
     }
 
     private static func validateLinkTargets(entry: OpaquePointer, entryPath: String) throws {
-        if let symlink = archive_entry_symlink(entry) {
-            let linkPath = String(cString: symlink)
-            try validateRelativeLinkPath(linkPath, entryPath: entryPath)
+        if let symlink = linkTarget(from: entry, utf8: archive_entry_symlink_utf8, fallback: archive_entry_symlink) {
+            try validateRelativeLinkPath(symlink, entryPath: entryPath)
         }
 
-        if let hardlink = archive_entry_hardlink(entry) {
-            let linkPath = String(cString: hardlink)
-            try validateRelativeLinkPath(linkPath, entryPath: entryPath)
+        if let hardlink = linkTarget(from: entry, utf8: archive_entry_hardlink_utf8, fallback: archive_entry_hardlink) {
+            try validateRelativeLinkPath(hardlink, entryPath: entryPath)
         }
     }
 
