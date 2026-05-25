@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LibArchive
 import Testing
@@ -231,6 +232,37 @@ func extractsZipArchive() throws {
         encoding: .utf8
     )
     #expect(extracted == "hello\n")
+}
+
+@Test
+func extractsZipArchiveWithUTF8PathnamesInCLocale() throws {
+    let workspace = try makeWorkspace()
+    let sourceDirectory = workspace.appendingPathComponent("source", isDirectory: true)
+    let archiveURL = workspace.appendingPathComponent("unicode.zip")
+    let destinationURL = workspace.appendingPathComponent("output", isDirectory: true)
+    let entryPath = "unicode/日本語-中文-한글/ページ-001.png"
+    let imageURL = sourceDirectory.appendingPathComponent(entryPath)
+
+    try FileManager.default.createDirectory(
+        at: imageURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL)
+    try run("/usr/bin/zip", arguments: ["-qr", archiveURL.path, entryPath], currentDirectory: sourceDirectory)
+
+    let previousLocale = setlocale(LC_CTYPE, nil).map { String(cString: $0) }
+    _ = setlocale(LC_CTYPE, "C")
+    defer {
+        if let previousLocale {
+            setlocale(LC_CTYPE, previousLocale)
+        }
+    }
+
+    let entries = try ArchiveReader().entries(at: archiveURL)
+    #expect(entries.contains { $0.path == entryPath })
+
+    try ArchiveReader().extract(archiveURL, to: destinationURL)
+    #expect(FileManager.default.fileExists(atPath: destinationURL.appendingPathComponent(entryPath).path))
 }
 
 @Test
