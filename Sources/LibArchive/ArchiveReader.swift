@@ -349,11 +349,15 @@ public final class ArchiveReader {
         return String(cString: message)
     }
 
+    private static let utf8LocaleCandidates = ["C.UTF-8", "UTF-8", "en_US.UTF-8", "en_US.UTF8"]
+
     private static func withUTF8Locale<T>(_ body: () throws -> T) throws -> T {
-        guard let locale = newlocale(LC_CTYPE_MASK, "C.UTF-8", nil)
-            ?? newlocale(LC_CTYPE_MASK, "en_US.UTF-8", nil)
-        else {
-            return try body()
+        let locale = utf8LocaleCandidates.lazy.compactMap { candidate in
+            newlocale(LC_CTYPE_MASK, candidate, nil)
+        }.first
+
+        guard let locale else {
+            throw ArchiveError.cannotCreateUTF8Locale(candidates: utf8LocaleCandidates)
         }
         defer {
             freelocale(locale)

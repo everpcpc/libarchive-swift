@@ -10,6 +10,7 @@ public enum ArchiveError: Error, Equatable, Sendable {
     case invalidEntryDataOffset(path: String, offset: Int64)
     case readFailed(message: String)
     case writeFailed(message: String)
+    case cannotCreateUTF8Locale(candidates: [String])
     case invalidEntryPath
     case unsafeEntryPath(String)
     case unsafeLinkPath(entry: String, link: String)
