@@ -55,6 +55,30 @@ for entry in entries {
 }
 ```
 
+Decode legacy archive pathnames:
+
+```swift
+import Foundation
+import LibArchive
+
+let legacyEncoding: String.Encoding = ...
+let reader = ArchiveReader(readOptions: .headerEncoding(legacyEncoding))
+let entries = try reader.entries(at: archiveURL)
+```
+
+Use best-effort pathname decoding from caller-provided candidates:
+
+```swift
+import Foundation
+import LibArchive
+
+let legacyEncodings: [String.Encoding] = [...]
+let reader = ArchiveReader(
+    readOptions: .automaticHeaderEncoding(candidates: legacyEncodings)
+)
+let entries = try reader.entries(at: archiveURL)
+```
+
 Read an entry payload:
 
 ```swift
@@ -136,6 +160,9 @@ This package deliberately exposes a small Swift-friendly API on top of libarchiv
 
 Supported Swift APIs:
 
+- `ArchiveReader.init(readOptions:)`
+  - Configures how archive metadata strings are decoded.
+  - Defaults to existing UTF-8-oriented behavior.
 - `ArchiveReader.entries(at:)`
   - Opens an archive from a file URL.
   - Returns metadata for each entry.
@@ -152,6 +179,10 @@ Supported Swift APIs:
   - Can normalize regular file and directory permissions before writing.
   - Rejects absolute paths and parent-directory traversal before writing.
   - Checks symlink and hardlink targets before writing.
+- `ArchiveReadOptions`
+  - Supports fixed legacy pathname decoding with a caller-provided `String.Encoding`.
+  - Supports best-effort automatic pathname decoding from caller-provided candidate encodings.
+- `ArchiveHeaderEncodingStrategy`
 - `ArchiveEntry.path`
 - `ArchiveEntry.size`
 - `ArchiveEntry.fileType`

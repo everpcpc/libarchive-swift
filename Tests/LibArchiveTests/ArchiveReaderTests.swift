@@ -266,6 +266,72 @@ func extractsZipArchiveWithUTF8PathnamesInCLocale() throws {
 }
 
 @Test
+func listsAndExtractsZipArchiveWithShiftJISPathnames() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("shift-jis.zip")
+    let destinationURL = workspace.appendingPathComponent("output", isDirectory: true)
+    let entryPath = "日本語/ページ.txt"
+    let contents = Data("shift-jis\n".utf8)
+
+    try writeStoredZipArchive(
+        entries: [
+            ZipEntry(
+                pathBytes: try encodedPathBytes(entryPath, encoding: shiftJISEncoding),
+                contents: contents
+            ),
+        ],
+        to: archiveURL
+    )
+
+    let explicitReader = ArchiveReader(readOptions: .headerEncoding(shiftJISEncoding))
+    let explicitEntries = try explicitReader.entries(at: archiveURL)
+    #expect(explicitEntries.contains { $0.path == entryPath })
+    #expect(try explicitReader.data(forEntryPath: entryPath, in: archiveURL) == contents)
+
+    let automaticReader = ArchiveReader(
+        readOptions: .automaticHeaderEncoding(candidates: legacyEncodingCandidates)
+    )
+    let automaticEntries = try automaticReader.entries(at: archiveURL)
+    #expect(automaticEntries.contains { $0.path == entryPath })
+
+    try explicitReader.extract(archiveURL, to: destinationURL)
+    #expect(FileManager.default.fileExists(atPath: destinationURL.appendingPathComponent(entryPath).path))
+}
+
+@Test
+func listsAndExtractsZipArchiveWithGBKPathnames() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("gbk.zip")
+    let destinationURL = workspace.appendingPathComponent("output", isDirectory: true)
+    let entryPath = "简体中文/页面.txt"
+    let contents = Data("gbk\n".utf8)
+
+    try writeStoredZipArchive(
+        entries: [
+            ZipEntry(
+                pathBytes: try encodedPathBytes(entryPath, encoding: gbkEncoding),
+                contents: contents
+            ),
+        ],
+        to: archiveURL
+    )
+
+    let explicitReader = ArchiveReader(readOptions: .headerEncoding(gbkEncoding))
+    let explicitEntries = try explicitReader.entries(at: archiveURL)
+    #expect(explicitEntries.contains { $0.path == entryPath })
+    #expect(try explicitReader.data(forEntryPath: entryPath, in: archiveURL) == contents)
+
+    let automaticReader = ArchiveReader(
+        readOptions: .automaticHeaderEncoding(candidates: legacyEncodingCandidates)
+    )
+    let automaticEntries = try automaticReader.entries(at: archiveURL)
+    #expect(automaticEntries.contains { $0.path == entryPath })
+
+    try explicitReader.extract(archiveURL, to: destinationURL)
+    #expect(FileManager.default.fileExists(atPath: destinationURL.appendingPathComponent(entryPath).path))
+}
+
+@Test
 func rejectsParentDirectoryTraversalDuringExtraction() throws {
     let workspace = try makeWorkspace()
     let archiveURL = workspace.appendingPathComponent("unsafe.tar")
@@ -320,6 +386,141 @@ private func posixPermissions(at url: URL) throws -> Int {
 
 private func fixtureURL(named name: String) throws -> URL {
     try #require(Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures"))
+}
+
+private var shiftJISEncoding: String.Encoding {
+    .shiftJIS
+}
+
+private var gbkEncoding: String.Encoding {
+    String.Encoding(
+        rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GBK_95.rawValue)
+        )
+    )
+}
+
+private var legacyEncodingCandidates: [String.Encoding] {
+    [shiftJISEncoding, gbkEncoding]
+}
+
+private func encodedPathBytes(_ path: String, encoding: String.Encoding) throws -> Data {
+    try #require(path.data(using: encoding))
+}
+
+private struct ZipEntry {
+    let pathBytes: Data
+    let contents: Data
+}
+
+private struct ZipCentralDirectoryEntry {
+    let pathBytes: Data
+    let contents: Data
+    let crc32: UInt32
+    let localHeaderOffset: UInt32
+}
+
+private func writeStoredZipArchive(
+    entries: [ZipEntry],
+    to archiveURL: URL
+) throws {
+    var archive = Data()
+    var centralDirectoryEntries: [ZipCentralDirectoryEntry] = []
+
+    for entry in entries {
+        let localHeaderOffset = UInt32(archive.count)
+        let crc = crc32(entry.contents)
+
+        appendUInt32(0x04034B50, to: &archive)
+        appendUInt16(20, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt32(crc, to: &archive)
+        appendUInt32(UInt32(entry.contents.count), to: &archive)
+        appendUInt32(UInt32(entry.contents.count), to: &archive)
+        appendUInt16(UInt16(entry.pathBytes.count), to: &archive)
+        appendUInt16(0, to: &archive)
+        archive.append(entry.pathBytes)
+        archive.append(entry.contents)
+
+        centralDirectoryEntries.append(
+            ZipCentralDirectoryEntry(
+                pathBytes: entry.pathBytes,
+                contents: entry.contents,
+                crc32: crc,
+                localHeaderOffset: localHeaderOffset
+            )
+        )
+    }
+
+    let centralDirectoryOffset = UInt32(archive.count)
+
+    for entry in centralDirectoryEntries {
+        appendUInt32(0x02014B50, to: &archive)
+        appendUInt16(20, to: &archive)
+        appendUInt16(20, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt32(entry.crc32, to: &archive)
+        appendUInt32(UInt32(entry.contents.count), to: &archive)
+        appendUInt32(UInt32(entry.contents.count), to: &archive)
+        appendUInt16(UInt16(entry.pathBytes.count), to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt16(0, to: &archive)
+        appendUInt32(0, to: &archive)
+        appendUInt32(entry.localHeaderOffset, to: &archive)
+        archive.append(entry.pathBytes)
+    }
+
+    let centralDirectorySize = UInt32(archive.count) - centralDirectoryOffset
+
+    appendUInt32(0x06054B50, to: &archive)
+    appendUInt16(0, to: &archive)
+    appendUInt16(0, to: &archive)
+    appendUInt16(UInt16(entries.count), to: &archive)
+    appendUInt16(UInt16(entries.count), to: &archive)
+    appendUInt32(centralDirectorySize, to: &archive)
+    appendUInt32(centralDirectoryOffset, to: &archive)
+    appendUInt16(0, to: &archive)
+
+    try archive.write(to: archiveURL)
+}
+
+private func appendUInt16(_ value: UInt16, to data: inout Data) {
+    var littleEndianValue = value.littleEndian
+    withUnsafeBytes(of: &littleEndianValue) { bytes in
+        data.append(contentsOf: bytes)
+    }
+}
+
+private func appendUInt32(_ value: UInt32, to data: inout Data) {
+    var littleEndianValue = value.littleEndian
+    withUnsafeBytes(of: &littleEndianValue) { bytes in
+        data.append(contentsOf: bytes)
+    }
+}
+
+private func crc32(_ data: Data) -> UInt32 {
+    var crc = UInt32.max
+
+    for byte in data {
+        crc ^= UInt32(byte)
+        for _ in 0..<8 {
+            if crc & 1 == 0 {
+                crc >>= 1
+            } else {
+                crc = (crc >> 1) ^ 0xEDB88320
+            }
+        }
+    }
+
+    return crc ^ UInt32.max
 }
 
 private func writeTarArchive(

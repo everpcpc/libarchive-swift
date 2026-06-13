@@ -22,7 +22,11 @@ public final class ArchiveReader {
     private static let fifo = mode_t(0o010000)
     private static let socket = mode_t(0o140000)
 
-    public init() {}
+    private let readOptions: ArchiveReadOptions
+
+    public init(readOptions: ArchiveReadOptions = .default) {
+        self.readOptions = readOptions
+    }
 
     public func entries(at fileURL: URL) throws -> [ArchiveEntry] {
         try withOpenArchive(at: fileURL) { archive in
@@ -43,9 +47,9 @@ public final class ArchiveReader {
                 guard let entryPointer else {
                     throw ArchiveError.invalidEntryPath
                 }
-                let path = try Self.path(from: entryPointer)
+                let path = try Self.path(from: entryPointer, readOptions: readOptions)
 
-                result.append(Self.entry(from: entryPointer, path: path))
+                result.append(Self.entry(from: entryPointer, path: path, readOptions: readOptions))
 
                 let skipStatus = archive_read_data_skip(archive)
                 guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
@@ -113,7 +117,7 @@ public final class ArchiveReader {
                 guard let entryPointer else {
                     throw ArchiveError.invalidEntryPath
                 }
-                let path = try Self.path(from: entryPointer)
+                let path = try Self.path(from: entryPointer, readOptions: readOptions)
 
                 if path == entryPath {
                     foundEntry = true
@@ -181,13 +185,13 @@ public final class ArchiveReader {
                     throw ArchiveError.invalidEntryPath
                 }
 
-                let entryPath = try Self.path(from: entryPointer)
+                let entryPath = try Self.path(from: entryPointer, readOptions: readOptions)
                 let outputURL = try Self.outputURL(
                     forEntryPath: entryPath,
                     relativeTo: extractionRootURL
                 )
 
-                try Self.validateLinkTargets(entry: entryPointer, entryPath: entryPath)
+                try Self.validateLinkTargets(entry: entryPointer, entryPath: entryPath, readOptions: readOptions)
 
                 try outputURL.withUnsafeFileSystemRepresentation { outputPath in
                     guard let outputPath else {
@@ -249,7 +253,7 @@ public final class ArchiveReader {
         }
     }
 
-    private static func entry(from entry: OpaquePointer, path: String) -> ArchiveEntry {
+    private static func entry(from entry: OpaquePointer, path: String, readOptions: ArchiveReadOptions) -> ArchiveEntry {
         ArchiveEntry(
             path: path,
             size: archive_entry_size(entry),
@@ -259,39 +263,134 @@ public final class ArchiveReader {
             accessDate: date(isSet: archive_entry_atime_is_set(entry), seconds: archive_entry_atime(entry)),
             changeDate: date(isSet: archive_entry_ctime_is_set(entry), seconds: archive_entry_ctime(entry)),
             birthDate: date(isSet: archive_entry_birthtime_is_set(entry), seconds: archive_entry_birthtime(entry)),
-            symlinkTarget: linkTarget(from: entry, utf8: archive_entry_symlink_utf8, fallback: archive_entry_symlink),
-            hardlinkTarget: linkTarget(from: entry, utf8: archive_entry_hardlink_utf8, fallback: archive_entry_hardlink),
+            symlinkTarget: linkTarget(from: entry, utf8: archive_entry_symlink_utf8, fallback: archive_entry_symlink, readOptions: readOptions),
+            hardlinkTarget: linkTarget(from: entry, utf8: archive_entry_hardlink_utf8, fallback: archive_entry_hardlink, readOptions: readOptions),
             uid: int64Value(isSet: archive_entry_uid_is_set(entry), value: archive_entry_uid(entry)),
             gid: int64Value(isSet: archive_entry_gid_is_set(entry), value: archive_entry_gid(entry)),
-            userName: utf8String(from: archive_entry_uname_utf8(entry), fallback: archive_entry_uname(entry)),
-            groupName: utf8String(from: archive_entry_gname_utf8(entry), fallback: archive_entry_gname(entry)),
+            userName: utf8String(from: archive_entry_uname_utf8(entry), fallback: archive_entry_uname(entry), readOptions: readOptions),
+            groupName: utf8String(from: archive_entry_gname_utf8(entry), fallback: archive_entry_gname(entry), readOptions: readOptions),
             isDataEncrypted: archive_entry_is_data_encrypted(entry) != 0,
             isMetadataEncrypted: archive_entry_is_metadata_encrypted(entry) != 0
         )
     }
 
-    private static func path(from entry: OpaquePointer) throws -> String {
-        if let path = archive_entry_pathname_utf8(entry) {
-            return String(cString: path)
-        }
-
-        if let path = archive_entry_pathname(entry) {
-            return String(cString: path)
+    private static func path(from entry: OpaquePointer, readOptions: ArchiveReadOptions) throws -> String {
+        if let path = utf8String(
+            from: archive_entry_pathname_utf8(entry),
+            fallback: archive_entry_pathname(entry),
+            readOptions: readOptions
+        ) {
+            return path
         }
 
         throw ArchiveError.invalidEntryPath
     }
 
-    private static func utf8String(from utf8Pointer: UnsafePointer<CChar>?, fallback: UnsafePointer<CChar>?) -> String? {
+    private static func utf8String(
+        from utf8Pointer: UnsafePointer<CChar>?,
+        fallback: UnsafePointer<CChar>?,
+        readOptions: ArchiveReadOptions
+    ) -> String? {
+        switch readOptions.headerEncodingStrategy {
+        case .fixed:
+            if let fallback {
+                return decodeFallbackString(from: fallback, readOptions: readOptions)
+            }
+        case .none, .automatic:
+            break
+        }
+
         if let utf8Pointer {
             return String(cString: utf8Pointer)
         }
 
-        return fallback.map { String(cString: $0) }
+        if let fallback {
+            return decodeFallbackString(from: fallback, readOptions: readOptions)
+        }
+
+        return nil
     }
 
-    private static func linkTarget(from entry: OpaquePointer, utf8: (OpaquePointer) -> UnsafePointer<CChar>?, fallback: (OpaquePointer) -> UnsafePointer<CChar>?) -> String? {
-        utf8String(from: utf8(entry), fallback: fallback(entry))
+    private static func decodeFallbackString(
+        from pointer: UnsafePointer<CChar>,
+        readOptions: ArchiveReadOptions
+    ) -> String {
+        let byteCount = strlen(pointer)
+        let data = Data(bytes: pointer, count: byteCount)
+
+        switch readOptions.headerEncodingStrategy {
+        case .none:
+            return String(cString: pointer)
+        case let .fixed(encoding):
+            return Self.string(from: data, encoding: encoding) ?? String(cString: pointer)
+        case let .automatic(candidates):
+            return Self.bestString(from: data, candidates: candidates) ?? String(cString: pointer)
+        }
+    }
+
+    private static func string(from data: Data, encoding: String.Encoding) -> String? {
+        guard let string = String(data: data, encoding: encoding) else {
+            return nil
+        }
+
+        guard string.data(using: encoding) == data else {
+            return nil
+        }
+
+        return string
+    }
+
+    private static func bestString(from data: Data, candidates: [String.Encoding]) -> String? {
+        var bestCandidate: (string: String, score: Int)?
+
+        for candidate in candidates {
+            guard let string = string(from: data, encoding: candidate) else {
+                continue
+            }
+
+            let score = stringScore(string)
+            if bestCandidate == nil || score > bestCandidate!.score {
+                bestCandidate = (string, score)
+            }
+        }
+
+        return bestCandidate?.string
+    }
+
+    private static func stringScore(_ string: String) -> Int {
+        var score = 0
+
+        for scalar in string.unicodeScalars {
+            switch scalar.value {
+            case 0x20...0x7E:
+                score += 1
+            case 0x3040...0x30FF:
+                score += 8
+            case 0x4E00...0x9FFF, 0x3400...0x4DBF:
+                score += 4
+            case 0xFF61...0xFF9F:
+                score += 2
+            case 0x3000...0x303F, 0xFF00...0xFFEF:
+                score += 2
+            case 0x0000...0x001F, 0x007F...0x009F:
+                score -= 20
+            case 0xE000...0xF8FF:
+                score -= 5
+            default:
+                score += 1
+            }
+        }
+
+        return score
+    }
+
+    private static func linkTarget(
+        from entry: OpaquePointer,
+        utf8: (OpaquePointer) -> UnsafePointer<CChar>?,
+        fallback: (OpaquePointer) -> UnsafePointer<CChar>?,
+        readOptions: ArchiveReadOptions
+    ) -> String? {
+        utf8String(from: utf8(entry), fallback: fallback(entry), readOptions: readOptions)
     }
 
     private static func date(isSet: Int32, seconds: Int) -> Date? {
@@ -492,12 +591,12 @@ public final class ArchiveReader {
         return outputURL
     }
 
-    private static func validateLinkTargets(entry: OpaquePointer, entryPath: String) throws {
-        if let symlink = linkTarget(from: entry, utf8: archive_entry_symlink_utf8, fallback: archive_entry_symlink) {
+    private static func validateLinkTargets(entry: OpaquePointer, entryPath: String, readOptions: ArchiveReadOptions) throws {
+        if let symlink = linkTarget(from: entry, utf8: archive_entry_symlink_utf8, fallback: archive_entry_symlink, readOptions: readOptions) {
             try validateRelativeLinkPath(symlink, entryPath: entryPath)
         }
 
-        if let hardlink = linkTarget(from: entry, utf8: archive_entry_hardlink_utf8, fallback: archive_entry_hardlink) {
+        if let hardlink = linkTarget(from: entry, utf8: archive_entry_hardlink_utf8, fallback: archive_entry_hardlink, readOptions: readOptions) {
             try validateRelativeLinkPath(hardlink, entryPath: entryPath)
         }
     }
