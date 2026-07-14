@@ -2,8 +2,8 @@
 
 import PackageDescription
 
-let packageVersion = "0.1.10"
-let cArchiveChecksum = "7658e7eab852a881aa7622f61e6bb2bc930daec72f58c8c863a2153cbea69751"
+let packageVersion = "0.1.11"
+let cArchiveChecksum = "beb32c2ff5d781dadc7f6875fdd8237606f52028a3b9a3690a057da856f161f3"
 
 let package = Package(
     name: "LibArchive",
