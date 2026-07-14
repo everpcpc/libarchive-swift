@@ -96,6 +96,22 @@ try ArchiveReader().readDataBlocks(forEntryPath: "folder/file.txt", in: archiveU
 }
 ```
 
+Stream selected entry payloads in a single archive pass:
+
+```swift
+try ArchiveReader().readDataBlocks(
+    in: archiveURL,
+    selecting: { entry in
+        entry.fileType == .regular && wantedPaths.contains(entry.path) ? .read : .skip
+    }
+) { entry, block in
+    if probe(entry, block) {
+        return .finishEntry
+    }
+    return .continueReading
+}
+```
+
 Read libarchive version information:
 
 ```swift
@@ -173,6 +189,9 @@ Supported Swift APIs:
 - `ArchiveReader.readDataBlocks(forEntryPath:in:_:)`
   - Streams a single entry payload to a caller-provided block receiver.
   - Exposes each libarchive data block with its offset.
+- `ArchiveReader.readDataBlocks(in:selecting:didFinishEntry:_:)`
+  - Streams selected entry payloads while opening and traversing the archive once.
+  - Allows callers to skip entries, finish an entry early, or stop the archive traversal.
 - `ArchiveReader.extract(_:to:options:permissionMode:)`
   - Extracts an archive to a destination directory.
   - Uses libarchive's disk writer.

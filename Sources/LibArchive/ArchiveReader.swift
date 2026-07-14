@@ -51,10 +51,7 @@ public final class ArchiveReader {
 
                 result.append(Self.entry(from: entryPointer, path: path, readOptions: readOptions))
 
-                let skipStatus = archive_read_data_skip(archive)
-                guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
-                    throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
-                }
+                try Self.skipEntryData(from: archive)
             }
 
             return result
@@ -125,15 +122,82 @@ public final class ArchiveReader {
                     break
                 }
 
-                let skipStatus = archive_read_data_skip(archive)
-                guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
-                    throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
-                }
+                try Self.skipEntryData(from: archive)
             }
         }
 
         if !foundEntry {
             throw ArchiveError.entryNotFound(path: entryPath)
+        }
+    }
+
+    /// Streams selected entry payloads while traversing the archive once.
+    ///
+    /// The selection closure runs for each entry before its payload is read. The receiver can
+    /// finish the current entry early or stop the entire traversal after inspecting a block.
+    /// `didFinishEntry` runs only for selected entries that reach EOF or are finished early.
+    public func readDataBlocks(
+        in fileURL: URL,
+        selecting selection: (ArchiveEntry) throws -> ArchiveEntryDataSelection,
+        didFinishEntry: (
+            _ entry: ArchiveEntry,
+            _ consumedToEOF: Bool
+        ) throws -> Void = { _, _ in },
+        _ receive: (
+            _ entry: ArchiveEntry,
+            _ block: ArchiveDataBlock
+        ) throws -> ArchiveDataBlockDisposition
+    ) throws {
+        try withOpenArchive(at: fileURL) { archive in
+            var entryPointer: OpaquePointer?
+
+            archiveLoop: while true {
+                let headerStatus = archive_read_next_header(archive, &entryPointer)
+
+                if headerStatus == ARCHIVE_EOF {
+                    break
+                }
+
+                guard headerStatus == ARCHIVE_OK || headerStatus == ARCHIVE_WARN else {
+                    throw ArchiveError.readFailed(message: Self.errorMessage(from: archive))
+                }
+
+                guard let entryPointer else {
+                    throw ArchiveError.invalidEntryPath
+                }
+
+                let path = try Self.path(from: entryPointer, readOptions: readOptions)
+                let entry = Self.entry(from: entryPointer, path: path, readOptions: readOptions)
+
+                switch try selection(entry) {
+                case .read:
+                    break
+                case .skip:
+                    try Self.skipEntryData(from: archive)
+                    continue
+                case .stop:
+                    break archiveLoop
+                }
+
+                while true {
+                    switch try Self.nextDataBlock(from: archive) {
+                    case .block(let block):
+                        switch try receive(entry, block) {
+                        case .continueReading:
+                            continue
+                        case .finishEntry:
+                            try Self.skipEntryData(from: archive)
+                            try didFinishEntry(entry, false)
+                            continue archiveLoop
+                        case .stop:
+                            break archiveLoop
+                        }
+                    case .end:
+                        try didFinishEntry(entry, true)
+                        continue archiveLoop
+                    }
+                }
+            }
         }
     }
 
@@ -543,13 +607,29 @@ public final class ArchiveReader {
         _ receive: (ArchiveDataBlock) throws -> Void
     ) throws {
         while true {
+            switch try nextDataBlock(from: archive) {
+            case .block(let block):
+                try receive(block)
+            case .end:
+                return
+            }
+        }
+    }
+
+    private enum DataBlockReadResult {
+        case block(ArchiveDataBlock)
+        case end
+    }
+
+    private static func nextDataBlock(from archive: OpaquePointer) throws -> DataBlockReadResult {
+        while true {
             var buffer: UnsafeRawPointer?
             var size = 0
             var offset: Int64 = 0
             let readStatus = archive_read_data_block(archive, &buffer, &size, &offset)
 
             if readStatus == ARCHIVE_EOF {
-                break
+                return .end
             }
 
             guard readStatus == ARCHIVE_OK else {
@@ -560,7 +640,16 @@ public final class ArchiveReader {
                 continue
             }
 
-            try receive(ArchiveDataBlock(offset: offset, data: Data(bytes: buffer, count: size)))
+            return .block(
+                ArchiveDataBlock(offset: offset, data: Data(bytes: buffer, count: size))
+            )
+        }
+    }
+
+    private static func skipEntryData(from archive: OpaquePointer) throws {
+        let skipStatus = archive_read_data_skip(archive)
+        guard skipStatus == ARCHIVE_OK || skipStatus == ARCHIVE_WARN else {
+            throw ArchiveError.readFailed(message: errorMessage(from: archive))
         }
     }
 

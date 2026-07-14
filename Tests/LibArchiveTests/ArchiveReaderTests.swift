@@ -100,6 +100,121 @@ func streamsEntryDataBlocksFromTarArchive() throws {
 }
 
 @Test
+func streamsSelectedEntryDataBlocksInSingleArchivePass() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+
+    try writeTarArchive(
+        entries: [
+            .regular(path: "skip.txt", contents: Data("skip\n".utf8)),
+            .regular(path: "first.txt", contents: Data("first\n".utf8)),
+            .regular(path: "second.txt", contents: Data("second\n".utf8)),
+        ],
+        to: archiveURL
+    )
+
+    let selectedPaths: Set<String> = ["first.txt", "second.txt"]
+    var visitedPaths: [String] = []
+    var receivedData: [String: Data] = [:]
+    var completions: [(path: String, consumedToEOF: Bool)] = []
+
+    try ArchiveReader().readDataBlocks(
+        in: archiveURL,
+        selecting: { entry in
+            visitedPaths.append(entry.path)
+            return selectedPaths.contains(entry.path) ? .read : .skip
+        },
+        didFinishEntry: { entry, consumedToEOF in
+            completions.append((entry.path, consumedToEOF))
+        }
+    ) { entry, block in
+        receivedData[entry.path, default: Data()].append(block.data)
+        return .continueReading
+    }
+
+    #expect(visitedPaths == ["skip.txt", "first.txt", "second.txt"])
+    #expect(String(decoding: receivedData["first.txt", default: Data()], as: UTF8.self) == "first\n")
+    #expect(String(decoding: receivedData["second.txt", default: Data()], as: UTF8.self) == "second\n")
+    #expect(completions.map { $0.path } == ["first.txt", "second.txt"])
+    #expect(completions.allSatisfy { $0.consumedToEOF })
+}
+
+@Test
+func finishesCurrentEntryEarlyAndStopsArchiveTraversal() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+    let largeContents = Data(repeating: 0x41, count: 1_000_000)
+
+    try writeTarArchive(
+        entries: [
+            .regular(path: "partial.bin", contents: largeContents),
+            .regular(path: "complete.txt", contents: Data("complete\n".utf8)),
+            .regular(path: "stop.txt", contents: Data("stop\n".utf8)),
+            .regular(path: "unvisited.txt", contents: Data("unvisited\n".utf8)),
+        ],
+        to: archiveURL
+    )
+
+    var visitedPaths: [String] = []
+    var partialBlockCount = 0
+    var completeData = Data()
+    var completions: [(path: String, consumedToEOF: Bool)] = []
+
+    try ArchiveReader().readDataBlocks(
+        in: archiveURL,
+        selecting: { entry in
+            visitedPaths.append(entry.path)
+            return entry.path == "stop.txt" ? .stop : .read
+        },
+        didFinishEntry: { entry, consumedToEOF in
+            completions.append((entry.path, consumedToEOF))
+        }
+    ) { entry, block in
+        if entry.path == "partial.bin" {
+            partialBlockCount += 1
+            return .finishEntry
+        }
+
+        completeData.append(block.data)
+        return .continueReading
+    }
+
+    #expect(visitedPaths == ["partial.bin", "complete.txt", "stop.txt"])
+    #expect(partialBlockCount == 1)
+    #expect(String(decoding: completeData, as: UTF8.self) == "complete\n")
+    #expect(completions.map { $0.path } == ["partial.bin", "complete.txt"])
+    #expect(completions.map { $0.consumedToEOF } == [false, true])
+}
+
+@Test
+func propagatesSelectedEntryReceiverErrors() throws {
+    let workspace = try makeWorkspace()
+    let archiveURL = workspace.appendingPathComponent("sample.tar")
+
+    try writeTarArchive(
+        entries: [
+            .regular(path: "hello.txt", contents: Data("hello\n".utf8)),
+        ],
+        to: archiveURL
+    )
+
+    var didThrow = false
+
+    do {
+        try ArchiveReader().readDataBlocks(
+            in: archiveURL,
+            selecting: { _ in .read }
+        ) { _, _ in
+            throw ArchiveStreamingTestError.expected
+        }
+    } catch ArchiveStreamingTestError.expected {
+        didThrow = true
+    }
+
+    #expect(didThrow)
+}
+
+@Test
 func throwsWhenReadingMissingEntryData() throws {
     let workspace = try makeWorkspace()
     let archiveURL = workspace.appendingPathComponent("sample.tar")
@@ -539,6 +654,10 @@ private func writeTarArchive(
 
     archive.append(Data(repeating: 0, count: 1024))
     try archive.write(to: archiveURL)
+}
+
+private enum ArchiveStreamingTestError: Error {
+    case expected
 }
 
 private struct TarEntry {
